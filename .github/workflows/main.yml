@@ -9,6 +9,17 @@ on:
     branches:
       - dev
       - main
+  workflow_dispatch:
+    inputs:
+      flavor:
+        description: 'Select build flavor'
+        required: true
+        default: 'qa'
+        type: choice
+        options:
+          - qa
+          - stage
+          - prod
 
 jobs:
   build:
@@ -52,7 +63,23 @@ jobs:
 
       #6 Building APK
       - name: Build APK
-        run: flutter build apk --release
+        run: | 
+          FLAVOR = ${{ github.events.inputs.flavor }}
+          case $FLAVOR in
+          qa)
+            echo "Build QA APK"
+            ;;
+          stage)
+            echo "Build Stage APK"
+            ;;
+          prod)
+            echo "Build Prod APK"
+            ;;
+          *)
+            echo "Unknown FLAVOR!"
+            ;;
+          esac
+          flutter build apk --release
 
         #7 Building App Bundle (aab)
 #      - name: Build appBundle
