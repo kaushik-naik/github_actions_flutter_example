@@ -4,11 +4,11 @@ on:
   pull_request:
     branches:
       - dev
-      - main  # Changed from 'main' to 'master' to match your requirement
+      - master  # Changed from 'main' to 'master' to match your requirement
   push:
     branches:
       - dev
-      - main  # Changed from 'main' to 'master' to match your requirement
+      - master  # Changed from 'main' to 'master' to match your requirement
   workflow_dispatch:
     inputs:
       flavor:
@@ -54,9 +54,9 @@ jobs:
                 FLAVOR="qa"
                 echo "Base branch is 'dev' - setting flavor to QA"
                 ;;
-              main)
+              master)
                 FLAVOR="stage"
-                echo "Base branch is 'main' - setting flavor to STAGE"
+                echo "Base branch is 'master' - setting flavor to STAGE"
                 ;;
               *)
                 FLAVOR="qa"
@@ -74,9 +74,9 @@ jobs:
                 FLAVOR="qa"
                 echo "Push to 'dev' branch - setting flavor to QA"
                 ;;
-              main)
+              master)
                 FLAVOR="stage"
-                echo "Push to 'main' branch - setting flavor to STAGE"
+                echo "Push to 'master' branch - setting flavor to STAGE"
                 ;;
               *)
                 FLAVOR="qa"
@@ -155,10 +155,12 @@ jobs:
     if: ${{ needs.build.outputs.build-success == 'true' }}
     outputs:
       upload-approved: ${{ steps.approval.outputs.approved }}
+    continue-on-error: true  # This prevents the job from failing the workflow
 
     steps:
       - name: Request Upload Approval
         id: approval
+        continue-on-error: true  # This prevents the step from failing the job
         run: |
           echo "🔍 Requesting approval to upload artifact for ${{ needs.build.outputs.flavor }} build..."
           echo "Build was successful, awaiting approval for artifact upload."
@@ -174,12 +176,21 @@ jobs:
           
           echo "approved=true" >> $GITHUB_OUTPUT
 
+      - name: Check Approval Status
+        run: |
+          if [[ "${{ steps.approval.outcome }}" == "success" ]]; then
+            echo "✅ Upload approval granted!"
+          else
+            echo "⏭️ Upload approval was rejected or timed out - this is expected behavior"
+            echo "The workflow will continue and show 'Skipped' for upload steps"
+          fi
+
   # Job 3: Upload Artifact (only if approved) - NO REBUILD!
   upload-artifact:
     name: Upload Build Artifact
     runs-on: ubuntu-latest
     needs: [build, request-upload-approval]
-    if: ${{ needs.request-upload-approval.outputs.upload-approved == 'true' && needs.build.outputs.build-success == 'true' }}
+    if: ${{ needs.request-upload-approval.result == 'success' && needs.request-upload-approval.outputs.upload-approved == 'true' && needs.build.outputs.build-success == 'true' }}
 
     steps:
       #1 Download Previously Built APK
@@ -256,23 +267,27 @@ jobs:
             echo "✅ Upload approval granted"
           elif [[ "${{ needs.request-upload-approval.result }}" == "skipped" ]]; then
             echo "⏭️ Upload approval skipped (build may have failed)"
+          elif [[ "${{ needs.request-upload-approval.result }}" == "failure" ]]; then
+            echo "⏭️ Upload approval was rejected or timed out (this is expected when not approved)"
           else
-            echo "❌ Upload approval denied or timed out"
+            echo "❓ Upload approval status: ${{ needs.request-upload-approval.result }}"
           fi
           
           if [[ "${{ needs.upload-artifact.result }}" == "success" ]]; then
             echo "✅ Artifact uploaded successfully (no rebuild required!)"
           elif [[ "${{ needs.upload-artifact.result }}" == "skipped" ]]; then
-            echo "⏭️ Artifact upload skipped (approval may have been denied)"
+            echo "⏭️ Artifact upload skipped (approval was not granted)"
           else
             echo "❌ Artifact upload failed"
           fi
           
           # Overall workflow success determination
+          # Consider workflow successful if build completed, regardless of approval/upload
           if [[ "${{ needs.build.result }}" == "success" ]]; then
-            echo "🎉 Overall Workflow: SUCCESS (Build completed)"
+            echo "🎉 Overall Workflow: SUCCESS (Build completed successfully)"
+            echo "📝 Note: Upload approval rejection is normal workflow behavior"
             exit 0
           else
-            echo "💥 Overall Workflow: FAILED"
+            echo "💥 Overall Workflow: FAILED (Build failed)"
             exit 1
           fi
