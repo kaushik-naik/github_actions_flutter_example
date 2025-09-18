@@ -22,10 +22,39 @@ on:
           - prod
 
 jobs:
-  # Job 1: Build (no approval needed)
+  # Job 1: Run Tests
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      #1 Checkout Repository
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      #2 Setup Flutter
+      - name: Set Up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.32.8'
+          channel: 'stable'
+
+      #3 Install Dependencies
+      - name: Install Dependencies
+        run: flutter pub get
+
+      #4 Run Flutter Tests
+      - name: Run Flutter Tests
+        run: |
+          echo "🧪 Running Flutter tests..."
+          flutter test --reporter=github
+          echo "✅ All tests passed!"
+
+  # Job 2: Build APK (depends on tests passing)
   build:
     name: Build APK
     runs-on: ubuntu-latest
+    needs: test  # Only run if tests pass
     outputs:
       build-success: ${{ steps.build-status.outputs.success }}
       flavor: ${{ steps.set-flavor.outputs.flavor }}
@@ -104,10 +133,6 @@ jobs:
       - name: Install Dependencies
         run: flutter pub get
 
-      # 5 Run tests
-      - name: Run Tests
-        run: flutter test
-
       #5 Building APK
       - name: Build APK
         run: |
@@ -150,7 +175,7 @@ jobs:
           echo "success=true" >> $GITHUB_OUTPUT
           echo "✅ Build completed successfully!"
 
-  # Job 2: Upload Artifact (automatically after successful build) - NO REBUILD!
+  # Job 3: Upload Artifact (automatically after successful build) - NO REBUILD!
   upload-artifact:
     name: Upload Build Artifact
     runs-on: ubuntu-latest
@@ -208,22 +233,31 @@ jobs:
           echo "📦 No rebuild was required - used previously built APK!"
           echo "🚀 APK published automatically after successful build!"
 
-  # Job 3: Workflow Status Summary
+  # Job 4: Workflow Status Summary
   workflow-summary:
     name: Workflow Summary
     runs-on: ubuntu-latest
-    needs: [build, upload-artifact]
+    needs: [test, build, upload-artifact]
     if: always()
 
     steps:
       - name: Workflow Status Summary
         run: |
           echo "## Workflow Summary"
+          echo "Test Status: ${{ needs.test.result }}"
           echo "Build Status: ${{ needs.build.result }}"
           echo "Upload Status: ${{ needs.upload-artifact.result }}"
           
+          if [[ "${{ needs.test.result }}" == "success" ]]; then
+            echo "✅ Tests passed successfully"
+          else
+            echo "❌ Tests failed"
+          fi
+          
           if [[ "${{ needs.build.result }}" == "success" ]]; then
             echo "✅ Build completed successfully"
+          elif [[ "${{ needs.build.result }}" == "skipped" ]]; then
+            echo "⏭️ Build skipped (tests may have failed)"
           else
             echo "❌ Build failed"
           fi
@@ -238,13 +272,13 @@ jobs:
           fi
           
           # Overall workflow success determination
-          if [[ "${{ needs.build.result }}" == "success" && "${{ needs.upload-artifact.result }}" == "success" ]]; then
-            echo "🎉 Overall Workflow: SUCCESS (Build and Upload completed)"
+          if [[ "${{ needs.test.result }}" == "success" && "${{ needs.build.result }}" == "success" && "${{ needs.upload-artifact.result }}" == "success" ]]; then
+            echo "🎉 Overall Workflow: SUCCESS (Tests, Build, and Upload completed)"
             exit 0
-          elif [[ "${{ needs.build.result }}" == "success" ]]; then
-            echo "⚠️ Overall Workflow: PARTIAL SUCCESS (Build completed, Upload failed)"
+          elif [[ "${{ needs.test.result }}" == "success" && "${{ needs.build.result }}" == "success" ]]; then
+            echo "⚠️ Overall Workflow: PARTIAL SUCCESS (Tests and Build completed, Upload failed)"
             exit 1
           else
-            echo "💥 Overall Workflow: FAILED (Build failed)"
+            echo "💥 Overall Workflow: FAILED"
             exit 1
           fi
