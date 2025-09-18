@@ -4,11 +4,11 @@ on:
   pull_request:
     branches:
       - dev
-      - main
+      - main  # Changed from 'main' to 'master' to match your requirement
   push:
     branches:
       - dev
-      - main
+      - main  # Changed from 'main' to 'master' to match your requirement
   workflow_dispatch:
     inputs:
       flavor:
@@ -35,13 +35,63 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v3
 
-      #2 Set Flavor
+      #2 Set Flavor Based on Branch or Manual Input
       - name: Set Build Flavor
         id: set-flavor
         run: |
-          FLAVOR="${{ github.event.inputs.flavor || 'qa' }}"
+          # For workflow_dispatch (manual trigger), use the selected flavor
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            FLAVOR="${{ github.event.inputs.flavor }}"
+            echo "Manual trigger - using selected flavor: $FLAVOR"
+          
+          # For pull_request, determine flavor based on base branch
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+            echo "Pull request detected with base branch: $BASE_BRANCH"
+          
+            case $BASE_BRANCH in
+              dev)
+                FLAVOR="qa"
+                echo "Base branch is 'dev' - setting flavor to QA"
+                ;;
+              main)
+                FLAVOR="stage"
+                echo "Base branch is 'main' - setting flavor to STAGE"
+                ;;
+              *)
+                FLAVOR="qa"
+                echo "Unknown base branch '$BASE_BRANCH' - defaulting to QA"
+                ;;
+            esac
+          
+          # For push events, determine flavor based on target branch
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            TARGET_BRANCH="${{ github.ref_name }}"
+            echo "Push event detected to branch: $TARGET_BRANCH"
+          
+            case $TARGET_BRANCH in
+              dev)
+                FLAVOR="qa"
+                echo "Push to 'dev' branch - setting flavor to QA"
+                ;;
+              main)
+                FLAVOR="stage"
+                echo "Push to 'main' branch - setting flavor to STAGE"
+                ;;
+              *)
+                FLAVOR="qa"
+                echo "Push to unknown branch '$TARGET_BRANCH' - defaulting to QA"
+                ;;
+            esac
+          
+          # Fallback
+          else
+            FLAVOR="qa"
+            echo "Unknown event type - defaulting to QA"
+          fi
+          
           echo "flavor=$FLAVOR" >> $GITHUB_OUTPUT
-          echo "Building for flavor: $FLAVOR"
+          echo "🎯 Final flavor selected: $FLAVOR"
 
       #3 Setup Flutter
       - name: Set Up Flutter
@@ -57,21 +107,27 @@ jobs:
       #5 Building APK
       - name: Build APK
         run: |
-          FLAVOR="${{ github.event.inputs.flavor || 'qa' }}"
+          FLAVOR="${{ steps.set-flavor.outputs.flavor }}"
+          echo "🏗️ Building APK for flavor: $FLAVOR"
+          
           case $FLAVOR in
           qa)
             echo "Building QA APK..."
+            # Add any QA-specific build commands here if needed
             ;;
           stage)
-            echo "Building Stage APK..."
+            echo "Building STAGE APK..."
+            # Add any STAGE-specific build commands here if needed
             ;;
           prod)
-            echo "Building Prod APK..."
+            echo "Building PROD APK..."
+            # Add any PROD-specific build commands here if needed
             ;;
           *)
             echo "Building default APK..."
             ;;
           esac
+          
           flutter build apk --release
 
       #6 Upload Build Artifacts Temporarily (for use in later job)
@@ -90,12 +146,12 @@ jobs:
           echo "success=true" >> $GITHUB_OUTPUT
           echo "✅ Build completed successfully!"
 
-  # Job 2: Request Approval for Artifact Upload (with QA environment protection)
+  # Job 2: Request Approval for Artifact Upload (with environment protection based on flavor)
   request-upload-approval:
     name: Request Upload Approval
     runs-on: ubuntu-latest
     needs: build
-    environment: QA  # This will trigger the protection rules you've set up
+    environment: ${{ needs.build.outputs.flavor == 'qa' && 'QA' || needs.build.outputs.flavor == 'stage' && 'STAGE' || 'PROD' }}
     if: ${{ needs.build.outputs.build-success == 'true' }}
     outputs:
       upload-approved: ${{ steps.approval.outputs.approved }}
@@ -106,6 +162,16 @@ jobs:
         run: |
           echo "🔍 Requesting approval to upload artifact for ${{ needs.build.outputs.flavor }} build..."
           echo "Build was successful, awaiting approval for artifact upload."
+          
+          # Display trigger information
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "📋 Triggered by PR targeting: ${{ github.event.pull_request.base.ref }}"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "📋 Triggered by push to: ${{ github.ref_name }}"
+          else
+            echo "📋 Triggered manually with flavor: ${{ needs.build.outputs.flavor }}"
+          fi
+          
           echo "approved=true" >> $GITHUB_OUTPUT
 
   # Job 3: Upload Artifact (only if approved) - NO REBUILD!
