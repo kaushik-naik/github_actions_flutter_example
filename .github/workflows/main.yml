@@ -146,51 +146,12 @@ jobs:
           echo "success=true" >> $GITHUB_OUTPUT
           echo "✅ Build completed successfully!"
 
-  # Job 2: Request Approval for Artifact Upload (with environment protection based on flavor)
-  request-upload-approval:
-    name: Request Upload Approval
-    runs-on: ubuntu-latest
-    needs: build
-    environment: ${{ needs.build.outputs.flavor == 'qa' && 'QA' || needs.build.outputs.flavor == 'stage' && 'STAGE' || 'PROD' }}
-    if: ${{ needs.build.outputs.build-success == 'true' }}
-    outputs:
-      upload-approved: ${{ steps.approval.outputs.approved }}
-    continue-on-error: true  # This prevents the job from failing the workflow
-
-    steps:
-      - name: Request Upload Approval
-        id: approval
-        continue-on-error: true  # This prevents the step from failing the job
-        run: |
-          echo "🔍 Requesting approval to upload artifact for ${{ needs.build.outputs.flavor }} build..."
-          echo "Build was successful, awaiting approval for artifact upload."
-          
-          # Display trigger information
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "📋 Triggered by PR targeting: ${{ github.event.pull_request.base.ref }}"
-          elif [[ "${{ github.event_name }}" == "push" ]]; then
-            echo "📋 Triggered by push to: ${{ github.ref_name }}"
-          else
-            echo "📋 Triggered manually with flavor: ${{ needs.build.outputs.flavor }}"
-          fi
-          
-          echo "approved=true" >> $GITHUB_OUTPUT
-
-      - name: Check Approval Status
-        run: |
-          if [[ "${{ steps.approval.outcome }}" == "success" ]]; then
-            echo "✅ Upload approval granted!"
-          else
-            echo "⏭️ Upload approval was rejected or timed out - this is expected behavior"
-            echo "The workflow will continue and show 'Skipped' for upload steps"
-          fi
-
-  # Job 3: Upload Artifact (only if approved) - NO REBUILD!
+  # Job 2: Upload Artifact (automatically after successful build) - NO REBUILD!
   upload-artifact:
     name: Upload Build Artifact
     runs-on: ubuntu-latest
-    needs: [build, request-upload-approval]
-    if: ${{ needs.request-upload-approval.result == 'success' && needs.request-upload-approval.outputs.upload-approved == 'true' && needs.build.outputs.build-success == 'true' }}
+    needs: build
+    if: ${{ needs.build.outputs.build-success == 'true' }}
 
     steps:
       #1 Download Previously Built APK
@@ -241,12 +202,13 @@ jobs:
         run: |
           echo "✅ Artifact uploaded successfully for ${{ needs.build.outputs.flavor }} build!"
           echo "📦 No rebuild was required - used previously built APK!"
+          echo "🚀 APK published automatically after successful build!"
 
-  # Job 4: Workflow Status Summary
+  # Job 3: Workflow Status Summary
   workflow-summary:
     name: Workflow Summary
     runs-on: ubuntu-latest
-    needs: [build, request-upload-approval, upload-artifact]
+    needs: [build, upload-artifact]
     if: always()
 
     steps:
@@ -254,7 +216,6 @@ jobs:
         run: |
           echo "## Workflow Summary"
           echo "Build Status: ${{ needs.build.result }}"
-          echo "Upload Approval Status: ${{ needs.request-upload-approval.result }}"
           echo "Upload Status: ${{ needs.upload-artifact.result }}"
           
           if [[ "${{ needs.build.result }}" == "success" ]]; then
@@ -263,30 +224,22 @@ jobs:
             echo "❌ Build failed"
           fi
           
-          if [[ "${{ needs.request-upload-approval.result }}" == "success" ]]; then
-            echo "✅ Upload approval granted"
-          elif [[ "${{ needs.request-upload-approval.result }}" == "skipped" ]]; then
-            echo "⏭️ Upload approval skipped (build may have failed)"
-          elif [[ "${{ needs.request-upload-approval.result }}" == "failure" ]]; then
-            echo "⏭️ Upload approval was rejected or timed out (this is expected when not approved)"
-          else
-            echo "❓ Upload approval status: ${{ needs.request-upload-approval.result }}"
-          fi
-          
           if [[ "${{ needs.upload-artifact.result }}" == "success" ]]; then
             echo "✅ Artifact uploaded successfully (no rebuild required!)"
+            echo "🚀 APK automatically published after successful build!"
           elif [[ "${{ needs.upload-artifact.result }}" == "skipped" ]]; then
-            echo "⏭️ Artifact upload skipped (approval was not granted)"
+            echo "⏭️ Artifact upload skipped (build may have failed)"
           else
             echo "❌ Artifact upload failed"
           fi
           
           # Overall workflow success determination
-          # Consider workflow successful if build completed, regardless of approval/upload
-          if [[ "${{ needs.build.result }}" == "success" ]]; then
-            echo "🎉 Overall Workflow: SUCCESS (Build completed successfully)"
-            echo "📝 Note: Upload approval rejection is normal workflow behavior"
+          if [[ "${{ needs.build.result }}" == "success" && "${{ needs.upload-artifact.result }}" == "success" ]]; then
+            echo "🎉 Overall Workflow: SUCCESS (Build and Upload completed)"
             exit 0
+          elif [[ "${{ needs.build.result }}" == "success" ]]; then
+            echo "⚠️ Overall Workflow: PARTIAL SUCCESS (Build completed, Upload failed)"
+            exit 1
           else
             echo "💥 Overall Workflow: FAILED (Build failed)"
             exit 1
