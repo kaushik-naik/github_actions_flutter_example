@@ -74,7 +74,16 @@ jobs:
           esac
           flutter build apk --release
 
-      #6 Set Build Status
+      #6 Upload Build Artifacts Temporarily (for use in later job)
+      - name: Upload Build Artifacts Temporarily
+        uses: actions/upload-artifact@v4
+        with:
+          name: temp-apk-${{ github.run_id }}
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 1  # Only keep for 1 day since it's temporary
+
+      #7 Set Build Status
       - name: Set Build Status
         id: build-status
         run: |
@@ -99,7 +108,7 @@ jobs:
           echo "Build was successful, awaiting approval for artifact upload."
           echo "approved=true" >> $GITHUB_OUTPUT
 
-  # Job 3: Upload Artifact (only if approved)
+  # Job 3: Upload Artifact (only if approved) - NO REBUILD!
   upload-artifact:
     name: Upload Build Artifact
     runs-on: ubuntu-latest
@@ -107,38 +116,54 @@ jobs:
     if: ${{ needs.request-upload-approval.outputs.upload-approved == 'true' && needs.build.outputs.build-success == 'true' }}
 
     steps:
-      #1 Checkout Repository (needed to access build files)
-      - name: Checkout Repository
-        uses: actions/checkout@v3
-
-      #2 Setup Flutter (needed to rebuild since artifacts don't persist between jobs)
-      - name: Set Up Flutter
-        uses: subosito/flutter-action@v2
+      #1 Download Previously Built APK
+      - name: Download Previously Built APK
+        uses: actions/download-artifact@v4
         with:
-          flutter-version: '3.32.8'
-          channel: 'stable'
+          name: temp-apk-${{ github.run_id }}
+          path: ./downloaded-apk
 
-      #3 Install Dependencies
-      - name: Install Dependencies
-        run: flutter pub get
-
-      #4 Rebuild APK (since build artifacts don't persist between jobs)
-      - name: Rebuild APK for Upload
+      #2 Verify APK exists
+      - name: Verify APK exists
         run: |
-          echo "Rebuilding APK for upload (approved)..."
-          flutter build apk --release
+          echo "Checking for APK file..."
+          ls -la ./downloaded-apk/
+          if [ -f "./downloaded-apk/app-release.apk" ]; then
+            echo "✅ APK found and ready for upload!"
+          else
+            echo "❌ APK not found!"
+            exit 1
+          fi
 
-      #5 Upload Artifacts
-      - name: Upload Artifacts
+      #3 Upload Final Artifacts
+      - name: Upload Final Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Releases-${{ needs.build.outputs.flavor }}
           path: |
-            build/app/outputs/flutter-apk/app-release.apk
+            ./downloaded-apk/app-release.apk
+
+      #4 Clean up temporary artifact
+      - name: Clean up temporary artifact
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: context.payload.workflow_run?.artifacts?.find(a => a.name === `temp-apk-${{ github.run_id }}`)?.id
+              });
+              console.log('✅ Temporary artifact cleaned up');
+            } catch (error) {
+              console.log('⚠️ Could not clean up temporary artifact:', error.message);
+              // Don't fail the workflow if cleanup fails
+            }
 
       - name: Upload Success
         run: |
           echo "✅ Artifact uploaded successfully for ${{ needs.build.outputs.flavor }} build!"
+          echo "📦 No rebuild was required - used previously built APK!"
 
   # Job 4: Workflow Status Summary
   workflow-summary:
@@ -170,7 +195,7 @@ jobs:
           fi
           
           if [[ "${{ needs.upload-artifact.result }}" == "success" ]]; then
-            echo "✅ Artifact uploaded successfully"
+            echo "✅ Artifact uploaded successfully (no rebuild required!)"
           elif [[ "${{ needs.upload-artifact.result }}" == "skipped" ]]; then
             echo "⏭️ Artifact upload skipped (approval may have been denied)"
           else
